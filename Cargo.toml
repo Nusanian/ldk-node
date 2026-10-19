@@ -29,6 +29,7 @@ panic = 'abort'     # Abort on panic
 default = []
 
 [dependencies]
+ctrlc = "2"
 lightning = { version = "0.2.0", features = ["std"] }
 lightning-types = { version = "0.3.0" }
 lightning-invoice = { version = "0.34.0", features = ["std"] }

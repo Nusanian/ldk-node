@@ -12,6 +12,8 @@ use ldk_node::bitcoin::Network;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::Builder;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn env(name: &str, default: &str) -> String {
@@ -41,6 +43,15 @@ fn main() {
 	node.start().expect("[sender] start gagal");
 	println!("[sender] node_id={} listen={}", node.node_id(), listen);
 
+	// Signal handler: SIGTERM/SIGINT → shutdown graceful via node.stop().
+	// Tanpa ini, pkill langsung bunuh proses dan wallet korup (WalletSetupFailed).
+	let running = Arc::new(AtomicBool::new(true));
+	let r = running.clone();
+	ctrlc::set_handler(move || {
+		println!("\n[sender] sinyal diterima, shutdown graceful...");
+		r.store(false, Ordering::SeqCst);
+	});
+
 	// Opsi: sambung ke peer saat startup (format node_id@host:port).
 	// Berguna untuk reconnect setelah restart — LDK tidak auto-reconnect.
 	if let Ok(conn) = std::env::var("CONNECT_PEER") {
@@ -64,8 +75,11 @@ fn main() {
 			Ok(pid) => println!("[sender] payment dikirim, id={:?}", pid),
 			Err(e) => println!("[sender] GAGAL bayar: {:?}", e),
 		}
-		// Tunggu hasil pembayaran
+		// Tunggu hasil pembayaran (bisa diinterupsi sinyal)
 		for _ in 0..12 {
+			if !running.load(Ordering::SeqCst) {
+				break;
+			}
 			std::thread::sleep(Duration::from_secs(5));
 			while let Some(event) = node.next_event() {
 				println!("[sender] event: {:?}", event);
@@ -74,13 +88,20 @@ fn main() {
 		}
 	} else {
 		println!("[sender] menunggu channel dari LSP... (Ctrl+C untuk berhenti)");
-		loop {
-			let event = node.wait_next_event();
-			println!("[sender] event: {:?}", event);
-			if node.event_handled().is_err() {
-				break;
+		while running.load(Ordering::SeqCst) {
+			// Poll dengan timeout agar bisa cek sinyal shutdown.
+			// wait_next_event() blokir selamanya dan tidak bisa diinterupsi.
+			if let Some(event) = node.next_event() {
+				println!("[sender] event: {:?}", event);
+				if node.event_handled().is_err() {
+					break;
+				}
+			} else {
+				std::thread::sleep(Duration::from_millis(500));
 			}
 		}
 	}
+	println!("[sender] shutdown...");
 	node.stop().ok();
+	println!("[sender] berhenti dengan bersih.");
 }
