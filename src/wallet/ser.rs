@@ -17,7 +17,6 @@ use bdk_chain::DescriptorId;
 use bdk_wallet::descriptor::Descriptor;
 use bdk_wallet::keys::DescriptorPublicKey;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::p2p::Magic;
 use bitcoin::{BlockHash, Network, OutPoint, Transaction, TxOut, Txid};
 use lightning::ln::msgs::DecodeError;
 use lightning::util::ser::{BigSize, Readable, RequiredWrapper, Writeable, Writer};
@@ -54,7 +53,13 @@ impl<'a> Writeable for ChangeSetSerWrapper<'a, Network> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), lightning::io::Error> {
 		CHANGESET_SERIALIZATION_VERSION.write(writer)?;
 
-		self.0.magic().to_bytes().write(writer)
+		// SPIKE (Nusacoin): serialize by name, NOT by p2p magic bytes.
+		// `Network::NusacoinTestnet` shares Bitcoin testnet3's p2p magic
+		// ({0x0b,0x11,0x09,0x07}, see `CTestNetParams`), so a magic-based
+		// round-trip reads back as `Network::Testnet` and the wallet then
+		// fails `check_network` with `NetworkMismatch` on every restart.
+		// The display string ("nusacoin-testnet") round-trips losslessly.
+		self.0.to_string().write(writer)
 	}
 }
 
@@ -65,9 +70,8 @@ impl Readable for ChangeSetDeserWrapper<Network> {
 			return Err(DecodeError::UnknownVersion);
 		}
 
-		let buf: [u8; 4] = Readable::read(reader)?;
-		let magic = Magic::from_bytes(buf);
-		let network = Network::from_magic(magic).ok_or(DecodeError::InvalidValue)?;
+		let network_str: String = Readable::read(reader)?;
+		let network = Network::from_str(&network_str).map_err(|_| DecodeError::InvalidValue)?;
 		Ok(Self(network))
 	}
 }
