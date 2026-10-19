@@ -45,7 +45,7 @@ fn main() {
 		min_channel_opening_fee_msat: 1_000, // 1 nusan — keputusan NUX
 		min_channel_lifetime: 36, // ~54 jam @ 90 mnt/block
 		max_client_to_self_delay: 2016,
-		min_payment_size_msat: 50_000_000, // 50.000 nusan
+		min_payment_size_msat: 1_000_000, // 1.000 nusan
 		max_payment_size_msat: 5_000_000_000, // 5.000.000 nusan
 		client_trusts_lsp: true,
 	};
