@@ -3,6 +3,8 @@
 //! Env:
 //!   SENDER_STORAGE - default /tmp/jit-sender (boleh /tmp, tidak ada dana)
 //!   SENDER_LISTEN  - default 127.0.0.1:9739
+//!   SENDER_ELECTRUM - alamat electrum, mis. "163.245.193.102:60009"
+//!   SENDER_SEED_PATH - path file seed (opsional, untuk node_id persisten)
 //!   PAY_INVOICE    - jika diisi, bayar invoice ini lalu tunggu 60 dtk
 //!
 //! Tanpa PAY_INVOICE: hanya jalan, cetak node_id, tunggu.
@@ -19,12 +21,18 @@ fn env(name: &str, default: &str) -> String {
 fn main() {
 	let storage = env("SENDER_STORAGE", "/tmp/jit-sender");
 	let listen = env("SENDER_LISTEN", "127.0.0.1:9739");
+	let electrum = env("SENDER_ELECTRUM", "163.245.193.102:60009");
+	let seed_path = std::env::var("SENDER_SEED_PATH").ok();
 	let pay_invoice = std::env::var("PAY_INVOICE").ok();
 
 	let mut builder = Builder::new();
 	builder.set_network(Network::NusacoinTestnet);
-	builder.set_chain_source_electrum("163.245.193.102:60009".to_string(), None);
+	builder.set_chain_source_electrum(electrum, None);
 	builder.set_storage_dir_path(storage);
+	if let Some(sp) = seed_path {
+		println!("[sender] memakai seed file: {}", sp);
+		builder.set_entropy_seed_path(sp);
+	}
 	builder
 		.set_listening_addresses(vec![SocketAddress::from_str(&listen).unwrap()])
 		.unwrap();
