@@ -865,6 +865,12 @@ pub enum Currency {
 
 	/// Bitcoin signet
 	Signet,
+
+	/// Nusacoin mainnet
+	Nusacoin,
+
+	/// Nusacoin testnet
+	NusacoinTestnet,
 }
 
 impl From<lightning_invoice::Currency> for Currency {
@@ -875,6 +881,8 @@ impl From<lightning_invoice::Currency> for Currency {
 			lightning_invoice::Currency::Regtest => Currency::Regtest,
 			lightning_invoice::Currency::Simnet => Currency::Simnet,
 			lightning_invoice::Currency::Signet => Currency::Signet,
+			lightning_invoice::Currency::Nusacoin => Currency::Nusacoin,
+			lightning_invoice::Currency::NusacoinTestnet => Currency::NusacoinTestnet,
 		}
 	}
 }
