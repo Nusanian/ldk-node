@@ -24,6 +24,12 @@ fn main() {
 	let lsp_addr = env("LSP_ADDR", "127.0.0.1:9738");
 	let token = env("LSP_TOKEN", "nux-lsp-test-token");
 	let storage = env("CLIENT_STORAGE", "/tmp/lsp-client-test");
+	let electrum = env("CLIENT_ELECTRUM", "163.245.193.102:60009");
+	// Nominal invoice dalam msat (default 5.000 nusan = 5_000_000 msat)
+	let amount_msat: u64 = std::env::var("INVOICE_MSAT")
+		.ok()
+		.and_then(|s| s.parse().ok())
+		.unwrap_or(5_000_000);
 
 	let node_id =
 		ldk_node::bitcoin::secp256k1::PublicKey::from_str(&lsp_node_id).expect("node_id hex");
@@ -32,7 +38,7 @@ fn main() {
 	println!("[client] menghubungkan ke LSP {} @ {} ...", lsp_node_id, lsp_addr);
 	let mut builder = Builder::new();
 	builder.set_network(Network::NusacoinTestnet);
-	builder.set_chain_source_electrum("163.245.193.102:60009".to_string(), None);
+	builder.set_chain_source_electrum(electrum, None);
 	builder.set_storage_dir_path(storage);
 	builder.set_liquidity_source_lsps2(node_id, address, Some(token));
 
@@ -41,9 +47,9 @@ fn main() {
 	println!("[client] node jalan, node_id={}", node.node_id());
 
 	// Minta invoice JIT — ini memicu handshake LSPS2 GetInfo/Buy ke server.
-	println!("[client] meminta invoice JIT 100.000 nusan (100_000_000 msat)...");
+	println!("[client] meminta invoice JIT {} msat...", amount_msat);
 	let desc = Bolt11InvoiceDescription::Direct(Description::new("uji JIT NUX".to_string()).unwrap());
-	match node.bolt11_payment().receive_via_jit_channel(100_000_000, &desc, 3600, None) {
+	match node.bolt11_payment().receive_via_jit_channel(amount_msat, &desc, 3600, None) {
 		Ok(invoice) => {
 			println!("[client] INVOICE OK: {}", invoice);
 			println!("[client] handshake LSPS2 BERHASIL ✅");
@@ -60,6 +66,19 @@ fn main() {
 		while let Some(event) = node.next_event() {
 			println!("[client] event: {:?}", event);
 			node.event_handled().ok();
+		}
+	}
+
+	// Mode tunggu: jika WAIT_PAYMENT=1, tetap online menunggu pembayaran JIT.
+	// Ini mensimulasikan HP user yang standby menerima pembayaran.
+	if std::env::var("WAIT_PAYMENT").ok().as_deref() == Some("1") {
+		println!("[client] mode tunggu pembayaran JIT... (Ctrl+C untuk berhenti)");
+		loop {
+			let event = node.wait_next_event();
+			println!("[client] event: {:?}", event);
+			if node.event_handled().is_err() {
+				break;
+			}
 		}
 	}
 
