@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, Once, RwLock};
 use std::time::SystemTime;
 use std::{fmt, fs};
 
-use bdk_wallet::template::Bip84;
+use bdk_wallet::template::{Bip84, DescriptorTemplate, DescriptorTemplateOut};
 use bdk_wallet::{KeychainKind, Wallet as BdkWallet};
 use bip39::Mnemonic;
 use bitcoin::bip32::{ChildNumber, Xpriv};
@@ -1288,8 +1288,15 @@ fn build_with_store_internal(
 		BuildError::InvalidSeedBytes
 	})?;
 
-	let descriptor = Bip84(xprv, KeychainKind::External);
-	let change_descriptor = Bip84(xprv, KeychainKind::Internal);
+	let descriptor = nux_bip84(xprv, KeychainKind::External, config.network).map_err(|e| {
+		log_error!(logger, "Failed to build wallet descriptor: {}", e);
+		BuildError::WalletSetupFailed
+	})?;
+	let change_descriptor =
+		nux_bip84(xprv, KeychainKind::Internal, config.network).map_err(|e| {
+			log_error!(logger, "Failed to build change descriptor: {}", e);
+			BuildError::WalletSetupFailed
+		})?;
 	let mut wallet_persister =
 		KVStoreWalletPersister::new(Arc::clone(&kv_store), Arc::clone(&logger));
 	let wallet_opt = BdkWallet::load()
@@ -1931,6 +1938,25 @@ pub(crate) fn sanitize_alias(alias_str: &str) -> Result<NodeAlias, BuildError> {
 	let mut bytes = [0u8; 32];
 	bytes[..alias.as_bytes().len()].copy_from_slice(alias.as_bytes());
 	Ok(NodeAlias(bytes))
+}
+
+// SPIKE (Nusacoin): build a Bip84 wallet descriptor that accepts the NUX networks.
+//
+// Root cause: `bdk_wallet` hardcodes its valid-network sets — `test_networks()`
+// is literally `{Testnet, Testnet4, Regtest, Signet}` — and has no notion of the
+// fork's `Network::Nusacoin` / `Network::NusacoinTestnet` variants. Without this,
+// wallet setup fails with `KeyError::InvalidNetwork` for both NUX networks, even
+// though the fork's rust-bitcoin handles the new variants everywhere else
+// (address params, xkey version bytes, bech32 HRPs).
+//
+// The Bip84 derivation itself is untouched; we only widen the declared valid
+// networks to include the configured one before handing the descriptor to BDK.
+fn nux_bip84(
+	xprv: Xpriv, keychain: KeychainKind, network: Network,
+) -> Result<DescriptorTemplateOut, bdk_wallet::descriptor::DescriptorError> {
+	let (desc, keymap, mut networks) = Bip84(xprv, keychain).build(network)?;
+	networks.insert(network);
+	Ok((desc, keymap, networks))
 }
 
 #[cfg(test)]
