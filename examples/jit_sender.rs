@@ -68,21 +68,62 @@ fn main() {
 	}
 
 	if let Some(inv_str) = pay_invoice {
-		println!("[sender] membayar invoice...");
 		let invoice: ldk_node::lightning_invoice::Bolt11Invoice =
 			inv_str.parse().expect("invoice tidak valid");
+		let need_msat = invoice.amount_milli_satoshis().unwrap_or(0);
+
+		// TUNGGU channel usable dulu, BARU bayar. Setelah reconnect,
+		// channel_reestablish butuh beberapa detik sampai channel
+		// berstatus usable; membayar sebelum itu selalu RouteNotFound
+		// (akar kegagalan pembayaran berulang 19-20 Okt 2026).
+		println!("[sender] menunggu channel usable (perlu >= {} msat)...", need_msat);
+		let mut usable = false;
+		for i in 0..45 {
+			if !running.load(Ordering::SeqCst) {
+				break;
+			}
+			for ch in node.list_channels() {
+				println!(
+					"[sender] channel {:?} usable={} outbound={} msat",
+					ch.channel_id, ch.is_usable, ch.outbound_capacity_msat
+				);
+				if ch.is_usable && ch.outbound_capacity_msat >= need_msat {
+					usable = true;
+				}
+			}
+			if usable {
+				println!("[sender] channel usable setelah ~{} dtk", i * 2);
+				break;
+			}
+			std::thread::sleep(Duration::from_secs(2));
+		}
+		if !usable {
+			println!("[sender] PERINGATAN: belum ada channel usable setelah 90 dtk - tetap coba bayar");
+		}
+
+		println!("[sender] membayar invoice...");
 		match node.bolt11_payment().send(&invoice, None) {
 			Ok(pid) => println!("[sender] payment dikirim, id={:?}", pid),
 			Err(e) => println!("[sender] GAGAL bayar: {:?}", e),
 		}
-		// Tunggu hasil pembayaran (bisa diinterupsi sinyal)
-		for _ in 0..12 {
-			if !running.load(Ordering::SeqCst) {
+		// Tunggu hasil pembayaran sampai final (sukses/gagal) atau
+		// maksimal ~3 menit - buka channel JIT + forward HTLC bisa
+		// makan waktu; jangan matikan node di tengah pembayaran.
+		let mut done = false;
+		for _ in 0..36 {
+			if done || !running.load(Ordering::SeqCst) {
 				break;
 			}
 			std::thread::sleep(Duration::from_secs(5));
 			while let Some(event) = node.next_event() {
 				println!("[sender] event: {:?}", event);
+				if matches!(
+					event,
+					ldk_node::Event::PaymentSuccessful { .. }
+						| ldk_node::Event::PaymentFailed { .. }
+				) {
+					done = true;
+				}
 				node.event_handled().ok();
 			}
 		}
