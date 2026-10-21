@@ -2,6 +2,11 @@ name: build-lsp-server
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - nux-spike
+    paths:
+      - .github/workflows/build-lsp-server.yml
 
 permissions:
   contents: write
