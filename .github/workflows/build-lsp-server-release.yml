@@ -1,0 +1,63 @@
+name: Build lsp_server (release)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - nux-spike
+    paths:
+      - .github/workflows/build-lsp-server-release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout ldk-node
+        uses: actions/checkout@v4
+        with:
+          path: ldk-node
+
+      - name: Checkout rust-bitcoin (patch sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Nusanian/rust-bitcoin
+          ref: nux-spike
+          path: rust-bitcoin
+
+      - name: Checkout rust-lightning (patch sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Nusanian/rust-lightning
+          ref: nux-spike
+          path: rust-lightning
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y clang pkg-config libssl-dev
+
+      - name: Build lsp_server (release)
+        working-directory: ldk-node
+        run: cargo build --release --example lsp_server
+
+      - name: Record unstripped size
+        working-directory: ldk-node
+        run: |
+          echo "UNSTRIPPED_SIZE_BYTES=$(stat -c%s target/release/examples/lsp_server)"
+          ls -la target/release/examples/lsp_server
+
+      - name: Strip binary and record size
+        working-directory: ldk-node
+        run: |
+          strip target/release/examples/lsp_server
+          echo "STRIPPED_SIZE_BYTES=$(stat -c%s target/release/examples/lsp_server)"
+          ls -la target/release/examples/lsp_server
+
+      - name: Publish binary to release
+        working-directory: ldk-node
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view lsp-server-release >/dev/null 2>&1 || gh release create lsp-server-release --title "lsp_server (LSP node, release)" --notes "Binary lsp_server versi RELEASE (stripped) untuk LSP Nusacoin testnet (termasuk fix buffer ukuran channel JIT). Dibangun otomatis dari branch nux-spike."
+          gh release upload lsp-server-release target/release/examples/lsp_server --clobber
