@@ -7,15 +7,34 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout ldk-node
+        uses: actions/checkout@v4
+        with:
+          path: ldk-node
+
+      - name: Checkout rust-bitcoin (patch sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Nusanian/rust-bitcoin
+          ref: nux-spike
+          path: rust-bitcoin
+
+      - name: Checkout rust-lightning (patch sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Nusanian/rust-lightning
+          ref: nux-spike
+          path: rust-lightning
 
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y clang pkg-config libssl-dev
 
       - name: Build jit_sender
+        working-directory: ldk-node
         run: cargo build --example jit_sender
 
       - name: Publish binary to release
+        working-directory: ldk-node
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
