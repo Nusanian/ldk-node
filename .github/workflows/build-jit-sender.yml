@@ -1,0 +1,23 @@
+name: build-jit-sender
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y clang pkg-config libssl-dev
+
+      - name: Build jit_sender
+        run: cargo build --example jit_sender
+
+      - name: Publish binary to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view jit-sender-build >/dev/null 2>&1 || gh release create jit-sender-build --title "jit_sender (test tool)" --notes "Binary jit_sender untuk uji JIT LSP Nusacoin testnet. Dibangun otomatis dari branch nux-spike."
+          gh release upload jit-sender-build target/debug/examples/jit_sender --clobber
