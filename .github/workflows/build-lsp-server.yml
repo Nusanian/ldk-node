@@ -1,0 +1,45 @@
+name: build-lsp-server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout ldk-node
+        uses: actions/checkout@v4
+        with:
+          path: ldk-node
+
+      - name: Checkout rust-bitcoin (patch sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Nusanian/rust-bitcoin
+          ref: nux-spike
+          path: rust-bitcoin
+
+      - name: Checkout rust-lightning (patch sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: Nusanian/rust-lightning
+          ref: nux-spike
+          path: rust-lightning
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y clang pkg-config libssl-dev
+
+      - name: Build lsp_server
+        working-directory: ldk-node
+        run: cargo build --example lsp_server
+
+      - name: Publish binary to release
+        working-directory: ldk-node
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view lsp-server-build >/dev/null 2>&1 || gh release create lsp-server-build --title "lsp_server (LSP node)" --notes "Binary lsp_server untuk LSP Nusacoin testnet (termasuk fix buffer ukuran channel JIT). Dibangun otomatis dari branch nux-spike."
+          gh release upload lsp-server-build target/debug/examples/lsp_server --clobber
