@@ -2,6 +2,8 @@
 //!
 //! Konfigurasi via environment variable:
 //!   LSP_NETWORK    - "testnet" (default) atau "mainnet"
+//!   LSP_STOP_FILE  - path file sinyal stop graceful (default "/tmp/stop-lsp";
+//!                    wajib beda per instance bila dua server jalan di satu mesin)
 //!   LSP_ELECTRUM   - alamat electrum, mis. "163.245.193.102:60009"
 //!   LSP_LISTEN     - alamat listen P2P, mis. "0.0.0.0:9738"
 //!   LSP_STORAGE    - direktori data, mis. "/tmp/lsp-server-testnet"
@@ -102,12 +104,13 @@ fn main() {
 		}
 	}
 
-	// Event loop: laporkan event penting, jalan sampai ada file /tmp/stop-lsp
+	// Event loop: laporkan event penting, jalan sampai ada file stop
 	// (graceful shutdown agar wallet tidak korup — JANGAN kill -9)
-	println!("[lsp] graceful stop: sentuh /tmp/stop-lsp");
-	let _ = std::fs::remove_file("/tmp/stop-lsp");
+	let stop_file = env("LSP_STOP_FILE", "/tmp/stop-lsp");
+	println!("[lsp] graceful stop: sentuh {}", stop_file);
+	let _ = std::fs::remove_file(&stop_file);
 	loop {
-		if std::path::Path::new("/tmp/stop-lsp").exists() {
+		if std::path::Path::new(&stop_file).exists() {
 			println!("[lsp] stop signal diterima, shutdown graceful...");
 			break;
 		}
