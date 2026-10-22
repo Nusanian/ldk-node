@@ -1,6 +1,7 @@
 //! Server LSP Nusacoin — layani JIT channel via LSPS2 (bLIP-52).
 //!
 //! Konfigurasi via environment variable:
+//!   LSP_NETWORK    - "testnet" (default) atau "mainnet"
 //!   LSP_ELECTRUM   - alamat electrum, mis. "163.245.193.102:60009"
 //!   LSP_LISTEN     - alamat listen P2P, mis. "0.0.0.0:9738"
 //!   LSP_STORAGE    - direktori data, mis. "/tmp/lsp-server-testnet"
@@ -21,12 +22,15 @@ fn env(name: &str, default: &str) -> String {
 }
 
 fn main() {
+	let network_name = env("LSP_NETWORK", "testnet");
+	let is_mainnet = network_name == "mainnet";
+	let network = if is_mainnet { Network::Nusacoin } else { Network::NusacoinTestnet };
 	let electrum = env("LSP_ELECTRUM", "163.245.193.102:60009");
 	let listen = env("LSP_LISTEN", "0.0.0.0:9738");
 	let storage = env("LSP_STORAGE", "/tmp/lsp-server-testnet");
 	let seed_path = std::env::var("LSP_SEED_PATH").ok();
 	let token = env("LSP_TOKEN", "nux-lsp-test-token");
-	let alias = env("LSP_ALIAS", "NUX-LSP-testnet");
+	let alias = env("LSP_ALIAS", if is_mainnet { "NUX-LSP-mainnet" } else { "NUX-LSP-testnet" });
 	let promise_hex =
 		env("LSP_PROMISE_SECRET", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 	let mut promise_secret = [0u8; 32];
@@ -35,7 +39,7 @@ fn main() {
 		promise_secret[i] = u8::from_str_radix(s, 16).unwrap();
 	}
 
-	println!("[lsp] electrum={} listen={} storage={}", electrum, listen, storage);
+	println!("[lsp] network={} electrum={} listen={} storage={}", network_name, electrum, listen, storage);
 
 	let service_config = LSPS2ServiceConfig {
 		require_token: Some(token),
@@ -51,7 +55,7 @@ fn main() {
 	};
 
 	let mut builder = Builder::new();
-	builder.set_network(Network::NusacoinTestnet);
+	builder.set_network(network);
 	builder.set_chain_source_electrum(electrum, None);
 	builder.set_storage_dir_path(storage);
 	if let Some(sp) = seed_path {
