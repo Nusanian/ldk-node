@@ -73,8 +73,12 @@ fn main() {
 	let node = builder.build().expect("[lsp] build gagal");
 	let fund_addr = node.onchain_payment().new_address().expect("[lsp] new_address gagal");
 	println!("[lsp] FUNDING_ADDRESS: {}", fund_addr);
+	// node_id dicetak SEBELUM start: start() bisa gagal bila electrum belum
+	// terjangkau (mis. electrs masih sync), tapi identitas node sudah final
+	// sejak build() dan dibutuhkan untuk konfigurasi client.
+	println!("[lsp] node_id={}", node.node_id());
 	node.start().expect("[lsp] start gagal");
-	println!("[lsp] node_id={} — melayani LSPS2, Ctrl+C untuk berhenti", node.node_id());
+	println!("[lsp] melayani LSPS2, Ctrl+C untuk berhenti");
 
 	// Uji: buka channel ke peer jika diminta via LSP_PEER_OPEN=node_id@host:port:sats:push_msat
 	// Tunggu wallet sync dulu (maks 5 menit) agar dana terlihat.
