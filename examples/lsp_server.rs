@@ -20,6 +20,14 @@
 //!   LSP_PAY_ONLY_NODE - PENGAMAN opsional: node_id hex (66 karakter) satu-
 //!                    satunya tujuan yang boleh dibayar. Bila terisi tapi
 //!                    tidak valid, mode bayar juga NONAKTIF total.
+//!   LSP_JIT_WATCHDOG_SECS - WATCHDOG JIT: ambang detik sejak sebuah channel
+//!                    mencapai ChannelReady tanpa PaymentForwarded sebelum
+//!                    alarm "[lsp] WATCHDOG:" dicetak (berulang tiap ambang
+//!                    selama pembayaran belum terforward). Default 120;
+//!                    0 = nonaktif; nilai tidak valid = peringatan + default.
+//!                    Catatan: entri juga dibuat untuk channel yang dibuka
+//!                    manual (LSP_PEER_OPEN) — entri terhapus pada forward
+//!                    pertama atau saat channel tutup; alarm bersifat advis.
 //!   LSP_PROMISE_SECRET - hex 32 byte untuk promise_secret LSPS2
 //!   LSP_ALIAS      - alias node (opsional, default "NUX-LSP-testnet")
 //!
@@ -28,8 +36,9 @@ use ldk_node::bitcoin::Network;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::liquidity::LSPS2ServiceConfig;
 use ldk_node::Builder;
+use std::collections::HashMap;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn env(name: &str, default: &str) -> String {
 	std::env::var(name).unwrap_or_else(|_| default.to_string())
@@ -154,6 +163,42 @@ fn main() {
 		}
 	}
 
+	// Watchdog JIT: lacak channel yang mencapai ChannelReady tapi belum
+	// meneruskan pembayaran (PaymentForwarded). Insiden produksi 29 Okt
+	// 2026: penerima terputus tepat di jendela penerusan, pembayaran
+	// menggantung diam di state PendingPayment LSPS2 (layanan tidak punya
+	// pengulang/pengingat; HTLC baru gagal otomatis dekat kadaluwarsa
+	// CLTV). Fail-fast dari kode example TIDAK mungkin: ldk-node tidak
+	// mengekspos LiquidityManager ke pemakai Node, dan satu-satunya API
+	// fail-backwards LSPS2ServiceHandler (channel_open_failed) hanya sah
+	// pada state PendingChannelOpen (sebelum ChannelReady). Maka watchdog
+	// di sini = deteksi + alarm berkala agar operator segera bertindak.
+	let watchdog_secs: u64 = match std::env::var("LSP_JIT_WATCHDOG_SECS") {
+		Ok(v) => match v.trim().parse::<u64>() {
+			Ok(n) => n,
+			Err(_) => {
+				println!(
+					"[lsp] PERINGATAN: LSP_JIT_WATCHDOG_SECS={:?} tidak valid, memakai default 120 detik",
+					v
+				);
+				120
+			},
+		},
+		Err(_) => 120,
+	};
+	let watchdog_on = watchdog_secs > 0;
+	if watchdog_on {
+		println!(
+			"[lsp] watchdog JIT AKTIF: alarm bila channel siap > {} detik tanpa PaymentForwarded",
+			watchdog_secs
+		);
+	} else {
+		println!("[lsp] watchdog JIT nonaktif (LSP_JIT_WATCHDOG_SECS=0)");
+	}
+	// Kunci: channel_id (format Debug, konsisten antar-variant event).
+	// Nilai: (waktu ChannelReady, counterparty, waktu alarm terakhir).
+	let mut jit_watch: HashMap<String, (Instant, String, Option<Instant>)> = HashMap::new();
+
 	// Event loop: laporkan event penting, jalan sampai ada file stop
 	// (graceful shutdown agar wallet tidak korup — JANGAN kill -9)
 	let stop_file = env("LSP_STOP_FILE", "/tmp/stop-lsp");
@@ -252,10 +297,61 @@ fn main() {
 				}
 			}
 		}
+		// Watchdog JIT: bunyikan alarm untuk channel yang sudah Ready
+		// melewati ambang tanpa PaymentForwarded (berulang tiap ambang).
+		if watchdog_on {
+			let now = Instant::now();
+			for (ch_id, (ready_at, peer, last_alarm)) in jit_watch.iter_mut() {
+				let stuck_secs = now.duration_since(*ready_at).as_secs();
+				if stuck_secs < watchdog_secs {
+					continue;
+				}
+				let due = match last_alarm {
+					None => true,
+					Some(t) => now.duration_since(*t).as_secs() >= watchdog_secs,
+				};
+				if due {
+					println!(
+						"[lsp] WATCHDOG: channel {} (peer {}) sudah {} detik sejak ChannelReady TANPA PaymentForwarded — pembayaran JIT diduga tertahan (penerima mungkin terputus di jendela penerusan); dana pengirim belum sampai dan baru kembali otomatis saat HTLC mendekati kadaluwarsa bila tidak ada pembayaran lanjutan ke penerima yang sama",
+						ch_id, peer, stuck_secs
+					);
+					*last_alarm = Some(now);
+				}
+			}
+		}
 		// wait_next_event dengan timeout via polling
 		let mut got_event = false;
 		for _ in 0..20 {
 			if let Some(event) = node.next_event() {
+				if watchdog_on {
+					match &event {
+						ldk_node::Event::ChannelReady {
+							channel_id,
+							counterparty_node_id,
+							..
+						} => {
+							jit_watch.insert(
+								format!("{:?}", channel_id),
+								(
+									Instant::now(),
+									counterparty_node_id
+										.map(|p| p.to_string())
+										.unwrap_or_else(|| "-".to_string()),
+									None,
+								),
+							);
+						},
+						ldk_node::Event::PaymentForwarded {
+							next_channel_id, ..
+						} => {
+							jit_watch.remove(&format!("{:?}", next_channel_id));
+						},
+						ldk_node::Event::ChannelClosed { channel_id, .. } => {
+							jit_watch.remove(&format!("{:?}", channel_id));
+						},
+						_ => {},
+					}
+				}
 				println!("[lsp] event: {:?}", event);
 				node.event_handled().ok();
 				got_event = true;
