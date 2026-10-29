@@ -12,6 +12,14 @@
 //!                    invoice (satu baris) ke file ini, server membayarnya
 //!                    tepat satu kali lalu mengosongkan file. Untuk kirim
 //!                    langsung LSP -> HP tanpa perantara sender.
+//!   LSP_PAY_MAX_NUSAN - PENGAMAN WAJIB mode bayar: batas maksimum nominal
+//!                    per pembayaran, dalam nusan. Bila LSP_PAY_FILE terisi
+//!                    tapi env ini kosong/tidak valid, mode bayar NONAKTIF
+//!                    total (server tetap jalan, tidak membayar apa pun).
+//!                    Invoice tanpa nominal atau di atas batas ditolak.
+//!   LSP_PAY_ONLY_NODE - PENGAMAN opsional: node_id hex (66 karakter) satu-
+//!                    satunya tujuan yang boleh dibayar. Bila terisi tapi
+//!                    tidak valid, mode bayar juga NONAKTIF total.
 //!   LSP_PROMISE_SECRET - hex 32 byte untuk promise_secret LSPS2
 //!   LSP_ALIAS      - alias node (opsional, default "NUX-LSP-testnet")
 //!
@@ -113,9 +121,37 @@ fn main() {
 	}
 
 	// Mode bayar langsung: file pemicu (operator menulis invoice ke file).
+	// Pengaman: tanpa LSP_PAY_MAX_NUSAN yang valid mode bayar NONAKTIF
+	// total — tidak ada keadaan "mode bayar hidup tanpa pagar".
 	let pay_file = std::env::var("LSP_PAY_FILE").ok();
+	let pay_max_nusan: Option<u64> = std::env::var("LSP_PAY_MAX_NUSAN")
+		.ok()
+		.and_then(|v| v.trim().parse::<u64>().ok())
+		.filter(|v| *v > 0);
+	let pay_only_node_raw = std::env::var("LSP_PAY_ONLY_NODE").ok();
+	let pay_only_node: Option<String> = pay_only_node_raw
+		.as_ref()
+		.map(|v| v.trim().to_lowercase())
+		.filter(|v| v.len() == 66 && v.chars().all(|c| c.is_ascii_hexdigit()));
+	let pay_config_valid = pay_max_nusan.is_some()
+		&& (pay_only_node_raw.is_none() || pay_only_node.is_some());
+	let pay_active = pay_file.is_some() && pay_config_valid;
 	if let Some(pf) = &pay_file {
-		println!("[lsp] mode bayar langsung aktif: tulis invoice ke {}", pf);
+		if pay_active {
+			println!(
+				"[lsp] mode bayar langsung AKTIF: tulis invoice ke {} (pengaman: batas {} nusan/pembayaran{})",
+				pf,
+				pay_max_nusan.unwrap(),
+				match &pay_only_node {
+					Some(n) => format!(", hanya ke node {}", n),
+					None => ", tanpa pembatasan tujuan".to_string(),
+				}
+			);
+		} else {
+			println!(
+				"[lsp] PERINGATAN: mode bayar NONAKTIF — LSP_PAY_MAX_NUSAN wajib diisi (dan LSP_PAY_ONLY_NODE harus hex 66 karakter bila diisi). Server tetap jalan tapi TIDAK akan membayar invoice apa pun."
+			);
+		}
 	}
 
 	// Event loop: laporkan event penting, jalan sampai ada file stop
@@ -153,22 +189,59 @@ fn main() {
 						.parse::<ldk_node::lightning_invoice::Bolt11Invoice>()
 					{
 						Ok(invoice) => {
-							println!(
-								"[lsp] membayar invoice langsung ({} nusan)...",
-								invoice
-									.amount_milli_satoshis()
-									.map(|m| m / 1000)
-									.unwrap_or(0)
-							);
-							match node.bolt11_payment().send(&invoice, None) {
-								Ok(pid) => println!(
-									"[lsp] pembayaran langsung terkirim, id={:?}",
-									pid
+							// Pengaman SEBELUM membayar: mode nonaktif,
+							// invoice tanpa nominal, nominal di atas batas,
+							// atau tujuan di luar whitelist selalu ditolak.
+							let amount_nusan = invoice
+								.amount_milli_satoshis()
+								.map(|m| m / 1000);
+							let mut tolak: Option<String> = None;
+							if !pay_active {
+								tolak = Some(
+									"mode bayar nonaktif (konfigurasi pengaman tidak lengkap)"
+										.to_string(),
+								);
+							} else if amount_nusan.is_none() {
+								tolak = Some("invoice tanpa nominal".to_string());
+							} else if amount_nusan.unwrap()
+								> pay_max_nusan.unwrap()
+							{
+								tolak = Some(format!(
+									"nominal {} nusan melebihi batas LSP_PAY_MAX_NUSAN {} nusan",
+									amount_nusan.unwrap(),
+									pay_max_nusan.unwrap()
+								));
+							} else if let Some(only) = &pay_only_node {
+								let payee =
+									invoice.recover_payee_pub_key().to_string();
+								if payee != *only {
+									tolak = Some(format!(
+										"tujuan {} di luar LSP_PAY_ONLY_NODE {}",
+										payee, only
+									));
+								}
+							}
+							match tolak {
+								Some(alasan) => println!(
+									"[lsp] pembayaran DITOLAK (pengaman): {}",
+									alasan
 								),
-								Err(e) => println!(
-									"[lsp] pembayaran langsung GAGAL: {:?}",
-									e
-								),
+								None => {
+									println!(
+										"[lsp] membayar invoice langsung ({} nusan)...",
+										amount_nusan.unwrap_or(0)
+									);
+									match node.bolt11_payment().send(&invoice, None) {
+										Ok(pid) => println!(
+											"[lsp] pembayaran langsung terkirim, id={:?}",
+											pid
+										),
+										Err(e) => println!(
+											"[lsp] pembayaran langsung GAGAL: {:?}",
+											e
+										),
+									}
+								}
 							}
 						}
 						Err(e) => println!(
