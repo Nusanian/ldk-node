@@ -4,12 +4,20 @@
 //!   SENDER_STORAGE - default /tmp/jit-sender (boleh /tmp, tidak ada dana)
 //!   SENDER_LISTEN  - default 127.0.0.1:9739
 //!   SENDER_ELECTRUM - alamat electrum, mis. "163.245.193.102:60009"
+//!   SENDER_NETWORK  - "mainnet" | "testnet" (default testnet)
 //!   SENDER_SEED_PATH - path file seed (opsional, untuk node_id persisten)
 //!   PAY_INVOICE    - jika diisi, bayar invoice ini lalu tunggu 60 dtk
+//!   CREATE_INVOICE_MSAT - jika diisi, buat invoice sebesar ini (mode terima /
+//!                    top-up rig): tunggu channel usable, cetak saldo channel
+//!                    SEBELUM, buat invoice, tunggu PaymentReceived, cetak
+//!                    saldo SESUDAH. Invoice juga ditulis ke INVOICE_OUT_FILE
+//!                    bila env itu diisi.
+//!   DUMP_CHANNELS  - jika diisi, cetak saldo channel berkala di mode tunggu.
 //!
 //! Tanpa PAY_INVOICE: hanya jalan, cetak node_id, tunggu.
 use ldk_node::bitcoin::Network;
 use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::Builder;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +28,20 @@ fn env(name: &str, default: &str) -> String {
 	std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
+fn dump_channels(node: &ldk_node::Node, tag: &str) {
+	let chans = node.list_channels();
+	if chans.is_empty() {
+		println!("[sender] channels[{}]: (tidak ada channel)", tag);
+	}
+	for ch in chans {
+		println!(
+			"[sender] channels[{}]: id={:?} value={} nusan usable={} outbound={} msat inbound={} msat",
+			tag, ch.channel_id, ch.channel_value_sats, ch.is_usable,
+			ch.outbound_capacity_msat, ch.inbound_capacity_msat
+		);
+	}
+}
+
 fn main() {
 	let storage = env("SENDER_STORAGE", "/tmp/jit-sender");
 	let listen = env("SENDER_LISTEN", "127.0.0.1:9739");
@@ -28,7 +50,11 @@ fn main() {
 	let pay_invoice = std::env::var("PAY_INVOICE").ok();
 
 	let mut builder = Builder::new();
-	builder.set_network(Network::NusacoinTestnet);
+	let network_name = env("SENDER_NETWORK", "testnet");
+	let network =
+		if network_name == "mainnet" { Network::Nusacoin } else { Network::NusacoinTestnet };
+	println!("[sender] network={}", network_name);
+	builder.set_network(network);
 	builder.set_chain_source_electrum(electrum, None);
 	builder.set_storage_dir_path(storage);
 	if let Some(sp) = seed_path {
@@ -67,7 +93,70 @@ fn main() {
 		}
 	}
 
-	if let Some(inv_str) = pay_invoice {
+	let create_msat = std::env::var("CREATE_INVOICE_MSAT")
+		.ok()
+		.and_then(|v| v.parse::<u64>().ok());
+	if let Some(amount_msat) = create_msat {
+		// Mode terima (top-up): tunggu channel usable dengan inbound cukup.
+		println!("[sender] mode CREATE_INVOICE: menunggu channel usable (inbound >= {} msat)...", amount_msat);
+		let mut ready = false;
+		for _ in 0..45 {
+			if !running.load(Ordering::SeqCst) {
+				break;
+			}
+			for ch in node.list_channels() {
+				if ch.is_usable && ch.inbound_capacity_msat >= amount_msat {
+					ready = true;
+				}
+			}
+			if ready {
+				break;
+			}
+			std::thread::sleep(Duration::from_secs(2));
+		}
+		if !ready {
+			println!("[sender] GAGAL: tidak ada channel usable dengan inbound cukup setelah 90 dtk");
+		} else {
+			dump_channels(&node, "SEBELUM-TOPUP");
+			let desc = Bolt11InvoiceDescription::Direct(
+				Description::new("topup sender rig".to_string()).unwrap(),
+			);
+			match node.bolt11_payment().receive(amount_msat, &desc, 3600) {
+				Ok(invoice) => {
+					let inv_str = invoice.to_string();
+					println!("[sender] INVOICE: {}", inv_str);
+					if let Ok(path) = std::env::var("INVOICE_OUT_FILE") {
+						let _ = std::fs::write(&path, &inv_str);
+						println!("[sender] invoice ditulis ke {}", path);
+					}
+					println!("[sender] menunggu pembayaran masuk (maks ~3 menit)...");
+					let mut received = false;
+					for _ in 0..36 {
+						if received || !running.load(Ordering::SeqCst) {
+							break;
+						}
+						std::thread::sleep(Duration::from_secs(5));
+						while let Some(event) = node.next_event() {
+							println!("[sender] event: {:?}", event);
+							if matches!(event, ldk_node::Event::PaymentReceived { .. }) {
+								received = true;
+							}
+							node.event_handled().ok();
+						}
+					}
+					if received {
+						// Beri jeda sebentar agar saldo channel final terbaca.
+						std::thread::sleep(Duration::from_secs(3));
+						dump_channels(&node, "SESUDAH-TOPUP");
+					} else {
+						println!("[sender] pembayaran TIDAK diterima dalam batas waktu");
+						dump_channels(&node, "SESUDAH-TOPUP-GAGAL");
+					}
+				},
+				Err(e) => println!("[sender] GAGAL buat invoice: {:?}", e),
+			}
+		}
+	} else if let Some(inv_str) = pay_invoice {
 		let invoice: ldk_node::lightning_invoice::Bolt11Invoice =
 			inv_str.parse().expect("invoice tidak valid");
 		let need_msat = invoice.amount_milli_satoshis().unwrap_or(0);
@@ -129,6 +218,8 @@ fn main() {
 		}
 	} else {
 		println!("[sender] menunggu channel dari LSP... (Ctrl+C untuk berhenti)");
+		let dump = std::env::var("DUMP_CHANNELS").is_ok();
+		let mut tick: u64 = 0;
 		while running.load(Ordering::SeqCst) {
 			// Poll dengan timeout agar bisa cek sinyal shutdown.
 			// wait_next_event() blokir selamanya dan tidak bisa diinterupsi.
@@ -139,6 +230,10 @@ fn main() {
 				}
 			} else {
 				std::thread::sleep(Duration::from_millis(500));
+				tick += 1;
+				if dump && tick % 20 == 0 {
+					dump_channels(&node, "berkala");
+				}
 			}
 		}
 	}

@@ -8,6 +8,10 @@
 //!   LSP_LISTEN     - alamat listen P2P, mis. "0.0.0.0:9738"
 //!   LSP_STORAGE    - direktori data, mis. "/tmp/lsp-server-testnet"
 //!   LSP_TOKEN      - token akses wajib dari client (require_token)
+//!   LSP_PAY_FILE   - path file pemicu bayar langsung: operator menulis
+//!                    invoice (satu baris) ke file ini, server membayarnya
+//!                    tepat satu kali lalu mengosongkan file. Untuk kirim
+//!                    langsung LSP -> HP tanpa perantara sender.
 //!   LSP_PROMISE_SECRET - hex 32 byte untuk promise_secret LSPS2
 //!   LSP_ALIAS      - alias node (opsional, default "NUX-LSP-testnet")
 //!
@@ -108,15 +112,72 @@ fn main() {
 		}
 	}
 
+	// Mode bayar langsung: file pemicu (operator menulis invoice ke file).
+	let pay_file = std::env::var("LSP_PAY_FILE").ok();
+	if let Some(pf) = &pay_file {
+		println!("[lsp] mode bayar langsung aktif: tulis invoice ke {}", pf);
+	}
+
 	// Event loop: laporkan event penting, jalan sampai ada file stop
 	// (graceful shutdown agar wallet tidak korup — JANGAN kill -9)
 	let stop_file = env("LSP_STOP_FILE", "/tmp/stop-lsp");
 	println!("[lsp] graceful stop: sentuh {}", stop_file);
 	let _ = std::fs::remove_file(&stop_file);
+	// Diagnostik rig: cetak saldo channel berkala bila LSP_DUMP_CHANNELS diisi.
+	let dump_channels = std::env::var("LSP_DUMP_CHANNELS").is_ok();
+	let mut tick: u64 = 0;
 	loop {
+		tick += 1;
+		if dump_channels && tick % 100 == 1 {
+			for ch in node.list_channels() {
+				println!(
+					"[lsp] channels[berkala]: id={:?} value={} nusan usable={} outbound={} msat inbound={} msat",
+					ch.channel_id, ch.channel_value_sats, ch.is_usable,
+					ch.outbound_capacity_msat, ch.inbound_capacity_msat
+				);
+			}
+		}
 		if std::path::Path::new(&stop_file).exists() {
 			println!("[lsp] stop signal diterima, shutdown graceful...");
 			break;
+		}
+		// Pemicu bayar langsung: ada invoice baru di file pemicu?
+		if let Some(pf) = &pay_file {
+			if let Ok(content) = std::fs::read_to_string(pf) {
+				let invoice_str = content.trim().to_string();
+				if !invoice_str.is_empty() {
+					// Kosongkan dulu: satu invoice dibayar tepat satu kali,
+					// walau proses bayarnya sendiri ternyata gagal.
+					let _ = std::fs::write(pf, "");
+					match invoice_str
+						.parse::<ldk_node::lightning_invoice::Bolt11Invoice>()
+					{
+						Ok(invoice) => {
+							println!(
+								"[lsp] membayar invoice langsung ({} nusan)...",
+								invoice
+									.amount_milli_satoshis()
+									.map(|m| m / 1000)
+									.unwrap_or(0)
+							);
+							match node.bolt11_payment().send(&invoice, None) {
+								Ok(pid) => println!(
+									"[lsp] pembayaran langsung terkirim, id={:?}",
+									pid
+								),
+								Err(e) => println!(
+									"[lsp] pembayaran langsung GAGAL: {:?}",
+									e
+								),
+							}
+						}
+						Err(e) => println!(
+							"[lsp] invoice di file bayar tidak valid: {:?}",
+							e
+						),
+					}
+				}
+			}
 		}
 		// wait_next_event dengan timeout via polling
 		let mut got_event = false;
