@@ -479,6 +479,12 @@ impl Bolt11Payment {
 				description: invoice_description.clone(),
 				invoice_expiry_delta_secs: Some(expiry_secs),
 				payment_hash: manual_claim_payment_hash,
+				// Nusacoin: the invoice currency must come from our configured network, not
+				// from the chain hash: Nusacoin's testnet shares mainnet's genesis block,
+				// so the chain hash cannot tell the two networks apart and the default
+				// derivation would always pick the mainnet currency. This mirrors the
+				// JIT path, which already builds its invoices from `config.network`.
+				currency: Some(self.config.network.into()),
 				..Default::default()
 			};
 

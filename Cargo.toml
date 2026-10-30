@@ -164,4 +164,9 @@ harness = false
 # rust-lightning tree: lightning-invoice patched with Currency::Nusacoin[Testnet].
 [patch.crates-io]
 bitcoin = { path = "../rust-bitcoin/bitcoin" }
+lightning = { path = "../rust-lightning/lightning" }
 lightning-invoice = { path = "../rust-lightning/lightning-invoice" }
+# With `lightning` itself coming from the path fork, `lightning-types` must
+# come from the same tree too, or it splits into two copies (registry + path)
+# and invoice/payment types no longer match across the boundary.
+lightning-types = { path = "../rust-lightning/lightning-types" }
