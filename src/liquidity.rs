@@ -130,6 +130,16 @@ pub struct LSPS2ServiceConfig {
 	pub min_payment_size_msat: u64,
 	/// The maximum payment size that we will accept when opening a channel.
 	pub max_payment_size_msat: u64,
+	/// The minimum size of a JIT channel opened by the service.
+	///
+	/// The channel size computed from the to-be-forwarded amount (including
+	/// over-provisioning) is raised to at least this value. Small channels can
+	/// otherwise leave too little forward headroom once the commitment-fee
+	/// reservation (which scales with the feerate estimator) is accounted for,
+	/// making the initial payment unforwardable.
+	///
+	/// Set to `0` to disable the floor.
+	pub min_jit_channel_size_msat: u64,
 	/// Use the 'client-trusts-LSP' trust model.
 	///
 	/// When set, the service will delay *broadcasting* the JIT channel's funding transaction until
@@ -746,6 +756,12 @@ where
 				// which the purely proportional over-provisioning cannot cover for small/medium payments.
 				let channel_amount_sats =
 					(amt_to_forward_msat + over_provisioning_msat + 2_500_000) / 1000;
+				// Raise the channel size to the configured JIT floor, if any: on
+				// small channels the commitment-fee reservation (which scales with
+				// the feerate estimator) can eat the entire forward headroom,
+				// leaving nothing to forward the initial payment with.
+				let channel_amount_sats =
+					channel_amount_sats.max(service_config.min_jit_channel_size_msat / 1000);
 				let cur_anchor_reserve_sats =
 					total_anchor_channels_reserve_sats(&self.channel_manager, &self.config);
 				let spendable_amount_sats =
