@@ -170,3 +170,9 @@ lightning-invoice = { path = "../rust-lightning/lightning-invoice" }
 # come from the same tree too, or it splits into two copies (registry + path)
 # and invoice/payment types no longer match across the boundary.
 lightning-types = { path = "../rust-lightning/lightning-types" }
+# lightning-transaction-sync: the fork tree carries the crate synced to the
+# crates.io 0.2.7 sources plus a sync-loop fix (bounded restarts per sync()
+# call; confirmation claims the server cannot prove are treated as
+# unconfirmed instead of aborting the sync). Without this patch the crate
+# resolves from crates.io and the fix is not included.
+lightning-transaction-sync = { path = "../rust-lightning/lightning-transaction-sync" }
