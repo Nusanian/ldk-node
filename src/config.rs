@@ -352,6 +352,13 @@ pub(crate) fn default_user_config(config: &Config) -> UserConfig {
 		config.anchor_channels_config.is_some();
 	user_config.reject_inbound_splices = false;
 	user_config.channel_handshake_limits.max_funding_satoshis = config.max_funding_satoshis;
+	// Accept HTLCs up to the full channel value in flight on new channels.
+	// LDK's default of 10% of the channel value would cap payments far
+	// below the funding this node accepts (see max_funding_satoshis): on a
+	// 20,000,000-sat channel, a payment above 2,000,000 sats could not even
+	// be attempted. Channels created earlier keep the in-flight limit they
+	// were created with.
+	user_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
 	if may_announce_channel(config).is_err() {
 		user_config.accept_forwards_to_priv_channels = false;
@@ -604,6 +611,20 @@ mod tests {
 		config.max_funding_satoshis = u64::MAX;
 		let user_config = default_user_config(&config);
 		assert_eq!(user_config.channel_handshake_limits.max_funding_satoshis, u64::MAX);
+	}
+
+	#[test]
+	fn user_config_max_inbound_htlc_value_in_flight_percent() {
+		// New channels are created with an in-flight HTLC ceiling of 100%
+		// of the channel value, not LDK's 10% default.
+		let config = Config::default();
+		let user_config = default_user_config(&config);
+		assert_eq!(
+			user_config
+				.channel_handshake_config
+				.max_inbound_htlc_value_in_flight_percent_of_channel,
+			100
+		);
 	}
 
 	#[test]
